@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --color-paper: #f3eee4;
+  --color-ink: #1c2430;
+  --color-brass: #8f6a3a;
+  --color-sage: #2f6b4f;
+  --color-clay: #a33b32;
+  --color-card: #f7f3ea;
+  --color-deep: #e7e0d2;
+  --color-line: #d4cbbd;
+  --color-sage-soft: #e5efe8;
+  --color-clay-soft: #f6e6e2;
+  --color-brass-soft: #f0e6d6;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html {
+    background: var(--color-paper);
+    color: var(--color-ink);
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--font-sans);
+    background-color: var(--color-paper);
+    background-image:
+      linear-gradient(to right, color-mix(in srgb, var(--color-ink) 6%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in srgb, var(--color-ink) 6%, transparent) 1px, transparent 1px);
+    background-size: 1.75rem 1.75rem;
+  }
+
+  ::selection {
+    background: var(--color-brass-soft);
+    color: var(--color-ink);
+  }
+
+  button:focus-visible,
+  [role="button"]:focus-visible {
+    outline: 2px solid var(--color-brass);
+    outline-offset: 2px;
+  }
+}
+
+@keyframes tile-in {
+  from {
+    transform: scale(0.9);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tile-in {
+  animation: tile-in 160ms ease-out;
+}
+
+.panel-in {
+  animation: panel-in 220ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile-in,
+  .panel-in {
+    animation: none;
+  }
+}
