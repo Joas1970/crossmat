@@ -12,6 +12,7 @@ import {
   type Cell,
   type Equation,
   type EqStatus,
+  type Op,
   type Puzzle,
   type Tier,
 } from "@/game/engine";
@@ -132,6 +133,12 @@ async function copyText(value: string): Promise<boolean> {
   }
 }
 
+const OP_BY_CODE: Record<string, Op> = { a: "+", s: "-", m: "*", d: "/" };
+
+function selectedOpsFromCode(code?: string): Op[] | undefined {
+  return code ? [...code].map((item) => OP_BY_CODE[item]).filter((item): item is Op => Boolean(item)) : undefined;
+}
+
 function clock(total: number) {
   const safe = Math.max(0, total);
   const m = Math.floor(safe / 60);
@@ -177,6 +184,7 @@ export function CrossMatApp() {
   const [save, setSave] = useState<Save>(EMPTY_SAVE);
   const [screen, setScreen] = useState<Screen>({ name: "home" });
   const [practiceTier, setPracticeTier] = useState<Tier>("facil");
+  const [practiceOps, setPracticeOps] = useState<Op[]>([]);
   const [presentation, setPresentation] = useState(false);
 
   useEffect(() => {
@@ -186,11 +194,11 @@ export function CrossMatApp() {
     const levelId = params.get("fase");
     const level = levelId ? CAMPAIGN.find((item) => item.id === levelId) : undefined;
     if (level) setScreen({ name: "play", puzzle: level, mode: "campaign" });
-    const practice = params.get("pratica")?.match(/^(facil|medio|desafio)-(\d+)$/);
+    const practice = params.get("pratica")?.match(/^(facil|medio|desafio)-(\d+)(?:-([asmd]+))?$/);
     if (practice) {
       setScreen({
         name: "play",
-        puzzle: practicePuzzle(practice[1] as Tier, Number(practice[2])),
+        puzzle: practicePuzzle(practice[1] as Tier, Number(practice[2]), selectedOpsFromCode(practice[3])),
         mode: "practice",
       });
     }
@@ -227,6 +235,8 @@ export function CrossMatApp() {
           save={save}
           practiceTier={practiceTier}
           onPracticeTier={setPracticeTier}
+          practiceOps={practiceOps}
+          onPracticeOps={setPracticeOps}
           onSound={() => update((current) => ({ ...current, sound: !current.sound }))}
           onSettings={(key, value) => update((current) => ({ ...current, [key]: value }))}
           onSaveStudent={(studentName, classroom) => update((current) => ({ ...current, studentName, classroom }))}
@@ -260,6 +270,8 @@ function Home({
   save,
   practiceTier,
   onPracticeTier,
+  practiceOps,
+  onPracticeOps,
   onSaveStudent,
   onSound,
   onSettings,
@@ -271,6 +283,8 @@ function Home({
   save: Save;
   practiceTier: Tier;
   onPracticeTier: (tier: Tier) => void;
+  practiceOps: Op[];
+  onPracticeOps: (ops: Op[]) => void;
   onSaveStudent: (studentName: string, classroom: string) => void;
   onSound: () => void;
   onSettings: (key: "largeText" | "highContrast", value: boolean) => void;
@@ -287,8 +301,10 @@ function Home({
   if (activeAttempt?.mode === "campaign") {
     resumablePuzzle = CAMPAIGN.find((puzzle) => puzzle.id === activeAttempt.puzzleId);
   } else if (activeAttempt?.mode === "practice") {
-    const match = activeAttempt.puzzleId.match(/^pratica-(facil|medio|desafio)-(\d+)$/);
-    if (match) resumablePuzzle = practicePuzzle(match[1] as Tier, Number(match[2]));
+    const match = activeAttempt.puzzleId.match(/^pratica-(facil|medio|desafio)-(\d+)(?:-([asmd]+))?$/);
+    if (match) {
+      resumablePuzzle = practicePuzzle(match[1] as Tier, Number(match[2]), selectedOpsFromCode(match[3]));
+    }
   }
 
   useEffect(() => {
@@ -338,13 +354,21 @@ function Home({
       </form>
 
       <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {OPS.map((op) => (
-          <li key={op.name} className="rounded-xl border border-line bg-card px-3 py-2">
-            <span className="font-display text-2xl leading-none text-brass">{op.glyph}</span>
-            <span className="mt-1 block text-sm text-ink">{op.name}</span>
+        {OPS.map((op) => {
+          const values: Record<string, Op> = { "+": "+", "−": "-", "×": "*", "÷": "/" };
+          const value = values[op.glyph];
+          const selected = practiceOps.includes(value);
+          return (
+          <li key={op.name}>
+            <button type="button" aria-pressed={selected} onClick={() => onPracticeOps(selected ? practiceOps.filter((item) => item !== value) : [...practiceOps, value])} className={"w-full rounded-xl border px-3 py-2 text-left " + (selected ? "border-ink bg-ink text-paper" : "border-line bg-card text-ink")}>
+              <span className={"font-display text-2xl leading-none " + (selected ? "text-brass-soft" : "text-brass")}>{op.glyph}</span>
+              <span className="mt-1 block text-sm">{op.name}</span>
+            </button>
           </li>
-        ))}
+          );
+        })}
       </ul>
+      <p className="-mt-6 text-xs text-ink/65" role="status">{practiceOps.length ? "Prática livre usará: " + OPS.filter((op) => practiceOps.includes(({ "+": "+", "−": "-", "×": "*", "÷": "/" } as Record<string, Op>)[op.glyph])).map((op) => op.name.toLocaleLowerCase("pt-BR")).join(", ") + "." : "Escolha uma ou mais operações para a prática livre; sem seleção, todas ficam disponíveis."}</p>
 
       <section className="flex flex-col gap-3">
         <h2 className="font-display text-2xl font-semibold">Campanha</h2>
@@ -444,7 +468,7 @@ function Home({
         </div>
         <button
           type="button"
-          onClick={() => onPlay(practicePuzzle(practiceTier, Date.now()), "practice")}
+          onClick={() => onPlay(practicePuzzle(practiceTier, Date.now(), practiceOps.length ? practiceOps : undefined), "practice")}
           className="mt-3 min-h-11 w-full rounded-xl border border-brass bg-brass-soft px-4 text-sm font-medium text-ink"
         >
           Gerar conta
@@ -747,8 +771,8 @@ function Play({
           url.search = "";
           if (mode === "campaign") url.searchParams.set("fase", puzzle.id);
           else {
-            const match = puzzle.id.match(/^pratica-(facil|medio|desafio)-(\d+)$/);
-            if (match) url.searchParams.set("pratica", `${match[1]}-${match[2]}`);
+            const match = puzzle.id.match(/^pratica-(facil|medio|desafio)-(\d+)(?:-([asmd]+))?$/);
+            if (match) url.searchParams.set("pratica", `${match[1]}-${match[2]}${match[3] ? `-${match[3]}` : ""}`);
           }
           const link = url.toString();
           try {
@@ -861,7 +885,10 @@ function Play({
             {mode === "practice" ? (
               <button
                 type="button"
-                onClick={() => onPlay(practicePuzzle(puzzle.tier, Date.now()), "practice")}
+                onClick={() => {
+                  const match = puzzle.id.match(/^pratica-(facil|medio|desafio)-(\d+)(?:-([asmd]+))?$/);
+                  onPlay(practicePuzzle(puzzle.tier, Date.now(), selectedOpsFromCode(match?.[3])), "practice");
+                }}
                 className="min-h-11 rounded-xl bg-ink text-sm font-medium text-paper"
               >
                 Outra conta

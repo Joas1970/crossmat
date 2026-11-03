@@ -335,7 +335,7 @@ export function buildPuzzle(spec: BuildSpec): Puzzle {
         })
         .join(""),
     );
-    if (spec.tier !== "facil") {
+    if (spec.tier !== "facil" && (!spec.wild || spec.wild.some((op) => op === "*" || op === "/"))) {
       const hasHard = lines.some((line) => line.includes("*") || line.includes("/"));
       if (!hasHard) continue;
     }
@@ -591,22 +591,26 @@ const PRACTICE_TEMPLATES: Record<Tier, string[][]> = {
   ],
 };
 
-export function practicePuzzle(tier: Tier, seed: number): Puzzle {
-  const templates = PRACTICE_TEMPLATES[tier];
+export function practicePuzzle(tier: Tier, seed: number, selectedOps?: Op[]): Puzzle {
+  const allowed = selectedOps?.length ? [...new Set(selectedOps)] : undefined;
+  const allTemplates = PRACTICE_TEMPLATES[tier];
+  const availableTemplates = allowed
+    ? allTemplates.map((template) => template.map((line) => [...line].map((char) => OP_SET.has(char as Op) && !allowed.includes(char as Op) ? "?" : char).join("")))
+    : allTemplates;
   const base = Math.abs(seed) || 1;
   for (let i = 0; i < 24; i++) {
     const s = (base + i * 131) >>> 0;
     try {
       return buildPuzzle({
-        id: `pratica-${tier}-${s}`,
+        id: `pratica-${tier}-${s}${allowed ? `-${allowed.map((op) => ({ "+": "a", "-": "s", "*": "m", "/": "d" })[op]).join("")}` : ""}`,
         tier,
         title: "Prática livre",
         blurb: "Uma conta nova. Vale qualquer jeito que feche todas as linhas e colunas.",
-        lines: templates[s % templates.length],
+        lines: availableTemplates[s % availableTemplates.length],
         hide: tier === "facil" ? 5 : tier === "medio" ? 6 : 7,
         max: tier === "facil" ? 24 : tier === "medio" ? 81 : 96,
         seed: (s + 17) >>> 0,
-        wild: tier === "facil" ? SOFT : FOUR,
+        wild: allowed ?? (tier === "facil" ? SOFT : FOUR),
       });
     } catch {
       /* tenta outra semente */
@@ -615,7 +619,7 @@ export function practicePuzzle(tier: Tier, seed: number): Puzzle {
   const fallback = campaignPuzzles().find((puzzle) => puzzle.tier === tier) ?? campaignPuzzles()[0];
   return {
     ...fallback,
-    id: `pratica-${tier}-${base}`,
+    id: `pratica-${tier}-${base}${allowed ? `-${allowed.map((op) => ({ "+": "a", "-": "s", "*": "m", "/": "d" })[op]).join("")}` : ""}`,
     title: "Prática livre",
     blurb: "Uma conta nova. Vale qualquer jeito que feche todas as linhas e colunas.",
   };
