@@ -3,17 +3,119 @@
 @theme {
   --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Fraunces", Georgia, "Times New Roman", serif;
-  --color-paper: #f3eee4;
-  --color-ink: #1c2430;
-  --color-brass: #8f6a3a;
+  --color-paper: #b9b9b8;
+  --color-ink: #333334;
+  --color-brass: #ab9061;
   --color-sage: #2f6b4f;
   --color-clay: #a33b32;
-  --color-card: #f7f3ea;
-  --color-deep: #e7e0d2;
-  --color-line: #d4cbbd;
+  --color-card: #c9c9c8;
+  --color-deep: #a9a9a8;
+  --color-line: #858584;
   --color-sage-soft: #e5efe8;
   --color-clay-soft: #f6e6e2;
   --color-brass-soft: #f0e6d6;
+}
+
+html[data-contrast="high"] {
+  --color-paper: #fff;
+  --color-ink: #111;
+  --color-card: #fff;
+  --color-deep: #ddd;
+  --color-line: #555;
+  --color-brass: #67480d;
+  --color-brass-soft: #f1e5c9;
+  --color-sage: #14532d;
+  --color-sage-soft: #dcfce7;
+  --color-clay: #991b1b;
+  --color-clay-soft: #fee2e2;
+}
+
+.large-text {
+  font-size: 1.125rem;
+}
+
+.large-text .text-xs {
+  font-size: 0.9rem;
+}
+
+.large-text .text-sm {
+  font-size: 1rem;
+}
+
+.large-text .text-base {
+  font-size: 1.125rem;
+}
+
+.presentation-mode {
+  max-width: 72rem;
+  padding-top: 1rem;
+}
+
+.presentation-mode .text-xs,
+.presentation-mode .text-sm {
+  font-size: 1.125rem;
+}
+
+.presentation-mode .text-2xl {
+  font-size: 2.25rem;
+}
+
+.presentation-mode .max-w-sm {
+  max-width: 36rem;
+}
+
+.presentation-mode .presentation-hide {
+  display: none;
+}
+
+.screen-viewer {
+  min-height: 55vh;
+}
+
+.screen-viewer video {
+  max-height: 70vh;
+}
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 1.5cm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    background-image: none !important;
+    color: #111 !important;
+  }
+
+  .print-hide,
+  .presentation-hide,
+  button:not(.board-cell) {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  main {
+    width: 100% !important;
+    max-width: none !important;
+    padding: 0 !important;
+  }
+
+  .board-cell {
+    border: 1px solid #333 !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+    color: #111 !important;
+    box-shadow: none !important;
+    print-color-adjust: exact;
+  }
 }
 
 @layer base {

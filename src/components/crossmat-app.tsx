@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowLeft, Eye, Lightbulb, RotateCcw, Undo2, Volume2, VolumeX } from "lucide-react";
+import { ArrowLeft, Download, Eye, Lightbulb, Maximize2, Printer, RotateCcw, Save as SaveIcon, Share2, Undo2, UserRound, Volume2, VolumeX } from "lucide-react";
+import { LiveKitShareRoom } from "@/components/livekit-share-room";
 import {
   campaignPuzzles,
   cellTone,
@@ -31,12 +32,18 @@ const OPS = [
 ] as const;
 
 type Save = {
+  version: 1;
   done: Record<string, { seconds: number; hints: number }>;
+  studentName: string;
+  classroom: string;
+  activeAttempt?: { puzzleId: string; mode: "campaign" | "practice"; placed: Record<string, number>; bank: number[]; hints: number; seconds: number };
   sound: boolean;
   live: boolean;
+  largeText: boolean;
+  highContrast: boolean;
 };
 
-const EMPTY_SAVE: Save = { done: {}, sound: false, live: true };
+const EMPTY_SAVE: Save = { version: 1, done: {}, studentName: "", classroom: "", sound: false, live: true, largeText: false, highContrast: false };
 const SAVE_KEY = "crossmat-v1";
 
 function readSave(): Save {
@@ -44,18 +51,85 @@ function readSave(): Save {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return EMPTY_SAVE;
     const parsed = JSON.parse(raw) as Partial<Save>;
+    const active = parsed.activeAttempt;
     return {
+      version: 1,
       done: parsed.done && typeof parsed.done === "object" ? parsed.done : {},
+      studentName: typeof parsed.studentName === "string" ? parsed.studentName.slice(0, 80) : "",
+      classroom: typeof parsed.classroom === "string" ? parsed.classroom.slice(0, 40) : "",
+      activeAttempt: active && typeof active === "object" && typeof active.puzzleId === "string" && (active.mode === "campaign" || active.mode === "practice")
+        ? active
+        : undefined,
       sound: Boolean(parsed.sound),
       live: parsed.live !== false,
+      largeText: Boolean(parsed.largeText),
+      highContrast: Boolean(parsed.highContrast),
     };
   } catch {
     return EMPTY_SAVE;
   }
 }
 
+function csvCell(value: string | number) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+function downloadProgress(save: Save) {
+  const rows = [
+    ["Nome", "Turma", "Fase", "Nível", "Status", "Tempo (segundos)", "Dicas"],
+    ...CAMPAIGN.map((puzzle) => {
+      const result = save.done[puzzle.id];
+      const tier = TIERS.find((item) => item.id === puzzle.tier)?.label ?? puzzle.tier;
+      return [save.studentName, save.classroom, puzzle.title, tier, result ? "Concluída" : "Pendente", result?.seconds ?? "", result?.hints ?? ""];
+    }),
+  ];
+  const csv = `\uFEFF${rows.map((row) => row.map(csvCell).join(";")).join("\r\n")}`;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  const fileBase = save.studentName.trim().toLocaleLowerCase("pt-BR").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "estudante";
+  anchor.href = href;
+  anchor.download = `crossmat-progresso-${fileBase}.csv`;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+async function shareProgress(save: Save) {
+  const completed = Object.keys(save.done).length;
+  const totalSeconds = Object.values(save.done).reduce((sum, result) => sum + result.seconds, 0);
+  const lines = [
+    "Progresso no CrossMat",
+    save.studentName ? `Nome: ${save.studentName}` : "",
+    save.classroom ? `Turma: ${save.classroom}` : "",
+    `Fases concluídas: ${completed} de ${CAMPAIGN.length}`,
+    `Tempo registrado: ${clock(totalSeconds)}`,
+    window.location.origin,
+  ].filter(Boolean);
+  const text = lines.join("\n");
+  try {
+    if (navigator.share) await navigator.share({ title: "Progresso no CrossMat", text });
+    else if (await copyText(text)) window.alert("Resumo copiado. Você pode colá-lo na mensagem que quiser enviar.");
+    else window.alert("Não foi possível compartilhar neste navegador.");
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "AbortError")) window.alert("Não foi possível compartilhar o progresso.");
+  }
+}
+
 function writeSave(save: Save) {
-  localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+  } catch {
+    // Storage can be unavailable in private browsing or quota-limited contexts.
+  }
+}
+
+async function copyText(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function clock(total: number) {
@@ -103,9 +177,23 @@ export function CrossMatApp() {
   const [save, setSave] = useState<Save>(EMPTY_SAVE);
   const [screen, setScreen] = useState<Screen>({ name: "home" });
   const [practiceTier, setPracticeTier] = useState<Tier>("facil");
+  const [presentation, setPresentation] = useState(false);
 
   useEffect(() => {
     setSave(readSave());
+    document.documentElement.dataset.contrast = readSave().highContrast ? "high" : "normal";
+    const params = new URLSearchParams(window.location.search);
+    const levelId = params.get("fase");
+    const level = levelId ? CAMPAIGN.find((item) => item.id === levelId) : undefined;
+    if (level) setScreen({ name: "play", puzzle: level, mode: "campaign" });
+    const practice = params.get("pratica")?.match(/^(facil|medio|desafio)-(\d+)$/);
+    if (practice) {
+      setScreen({
+        name: "play",
+        puzzle: practicePuzzle(practice[1] as Tier, Number(practice[2])),
+        mode: "practice",
+      });
+    }
   }, []);
 
   const update = (fn: (current: Save) => Save) => {
@@ -116,14 +204,39 @@ export function CrossMatApp() {
     });
   };
 
+  const togglePresentation = () => {
+    const next = !presentation;
+    setPresentation(next);
+    if (!next && document.fullscreenElement) void document.exitFullscreen();
+    if (next && document.documentElement.requestFullscreen) {
+      void document.documentElement.requestFullscreen().catch(() => {});
+    }
+  };
+
+  useEffect(() => {
+    document.documentElement.dataset.contrast = save.highContrast ? "high" : "normal";
+  }, [save.highContrast]);
+
   return (
-    <main className="mx-auto min-h-screen w-full max-w-lg px-4 pt-6 pb-24">
+    <main
+      className={"mx-auto min-h-screen w-full px-4 pb-24 " + (presentation ? "presentation-mode" : "max-w-lg pt-6 ") + (save.largeText ? "large-text " : "")}
+      data-contrast={save.highContrast ? "high" : "normal"}
+    >
       {screen.name === "home" ? (
         <Home
           save={save}
           practiceTier={practiceTier}
           onPracticeTier={setPracticeTier}
           onSound={() => update((current) => ({ ...current, sound: !current.sound }))}
+          onSettings={(key, value) => update((current) => ({ ...current, [key]: value }))}
+          onSaveStudent={(studentName, classroom) => update((current) => ({ ...current, studentName, classroom }))}
+          onReset={() => {
+            if (window.confirm("Apagar todo o progresso salvo neste navegador?")) {
+              update((current) => ({ ...current, done: {}, activeAttempt: undefined }));
+            }
+          }}
+          presentation={presentation}
+          onPresentation={togglePresentation}
           onPlay={(puzzle, mode) => setScreen({ name: "play", puzzle, mode })}
         />
       ) : (
@@ -133,6 +246,8 @@ export function CrossMatApp() {
           mode={screen.mode}
           save={save}
           onSave={update}
+          presentation={presentation}
+          onPresentation={togglePresentation}
           onHome={() => setScreen({ name: "home" })}
           onPlay={(puzzle, mode) => setScreen({ name: "play", puzzle, mode })}
         />
@@ -145,15 +260,42 @@ function Home({
   save,
   practiceTier,
   onPracticeTier,
+  onSaveStudent,
   onSound,
+  onSettings,
+  onReset,
+  presentation,
+  onPresentation,
   onPlay,
 }: {
   save: Save;
   practiceTier: Tier;
   onPracticeTier: (tier: Tier) => void;
+  onSaveStudent: (studentName: string, classroom: string) => void;
   onSound: () => void;
+  onSettings: (key: "largeText" | "highContrast", value: boolean) => void;
+  onReset: () => void;
+  presentation: boolean;
+  onPresentation: () => void;
   onPlay: (puzzle: Puzzle, mode: "campaign" | "practice") => void;
 }) {
+  const [studentName, setStudentName] = useState(save.studentName);
+  const [classroom, setClassroom] = useState(save.classroom);
+  const [profileMessage, setProfileMessage] = useState("");
+  let resumablePuzzle: Puzzle | undefined;
+  const activeAttempt = save.activeAttempt;
+  if (activeAttempt?.mode === "campaign") {
+    resumablePuzzle = CAMPAIGN.find((puzzle) => puzzle.id === activeAttempt.puzzleId);
+  } else if (activeAttempt?.mode === "practice") {
+    const match = activeAttempt.puzzleId.match(/^pratica-(facil|medio|desafio)-(\d+)$/);
+    if (match) resumablePuzzle = practicePuzzle(match[1] as Tier, Number(match[2]));
+  }
+
+  useEffect(() => {
+    setStudentName(save.studentName);
+    setClassroom(save.classroom);
+  }, [save.studentName, save.classroom]);
+
   return (
     <div className="flex flex-col gap-8">
       <header className="flex items-start justify-between gap-4">
@@ -161,21 +303,39 @@ function Home({
           <p className="text-xs font-medium tracking-widest text-brass uppercase">Contas cruzadas</p>
           <h1 className="font-display text-5xl leading-none font-semibold text-ink">CrossMat</h1>
         </div>
-        <button
-          type="button"
-          onClick={onSound}
-          aria-pressed={save.sound}
-          aria-label={save.sound ? "Desligar som" : "Ligar som"}
-          className="flex size-11 items-center justify-center rounded-full border border-line bg-card text-ink"
-        >
-          {save.sound ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}
-        </button>
+        <div className="flex gap-2">
+          <button type="button" onClick={onSound} aria-pressed={save.sound} aria-label={save.sound ? "Desligar som" : "Ligar som"} className="flex size-11 items-center justify-center rounded-full border border-line bg-card text-ink">
+            {save.sound ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}
+          </button>
+          <button type="button" onClick={onPresentation} aria-pressed={presentation} aria-label="Alternar modo de apresentação" className="flex size-11 items-center justify-center rounded-full border border-line bg-card text-ink">
+            <Maximize2 className="size-5" />
+          </button>
+        </div>
       </header>
 
       <p className="max-w-prose text-base leading-relaxed text-ink">
         Complete as contas na horizontal e na vertical. Cada número da bandeja entra uma vez. A conta é sempre
         dois números e uma operação: a ordem da esquerda para a direita, ou de cima para baixo.
       </p>
+
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        onSaveStudent(studentName.trim().slice(0, 80), classroom.trim().slice(0, 40));
+        setProfileMessage("Nome e turma salvos neste navegador.");
+      }} className="rounded-2xl border border-line bg-card p-4">
+        <h2 className="flex items-center gap-2 font-display text-2xl font-semibold"><UserRound className="size-5" /> Identificação do estudante</h2>
+        <p className="mt-1 text-sm text-ink/70">Opcional. Os dados ficam neste navegador e não aparecem nos convites de atividade.</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <label className="text-sm">Nome
+            <input value={studentName} onChange={(event) => setStudentName(event.target.value)} maxLength={80} autoComplete="name" className="mt-1 min-h-11 w-full rounded-lg border border-line bg-paper px-3" placeholder="Nome do estudante" />
+          </label>
+          <label className="text-sm">Turma
+            <input value={classroom} onChange={(event) => setClassroom(event.target.value)} maxLength={40} className="mt-1 min-h-11 w-full rounded-lg border border-line bg-paper px-3" placeholder="Ex.: 6º A" />
+          </label>
+        </div>
+        <button type="submit" className="mt-3 flex min-h-11 items-center justify-center gap-2 rounded-xl bg-ink px-4 text-sm font-medium text-paper"><SaveIcon className="size-4" /> Salvar identificação</button>
+        {profileMessage ? <p role="status" className="mt-2 text-sm text-sage">{profileMessage}</p> : null}
+      </form>
 
       <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {OPS.map((op) => (
@@ -229,6 +389,35 @@ function Home({
         </div>
       </section>
 
+      <section className="rounded-2xl border border-line bg-card p-4" aria-labelledby="progress-title">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="progress-title" className="font-display text-2xl font-semibold">Seu progresso</h2>
+            <p className="mt-1 text-sm text-ink/70">{Object.keys(save.done).length} de {CAMPAIGN.length} fases concluídas</p>
+          </div>
+          <p className="text-sm text-brass">{clock(Object.values(save.done).reduce((sum, item) => sum + item.seconds, 0))} jogados</p>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {CAMPAIGN.map((puzzle) => <span key={puzzle.id} title={puzzle.title} className={"rounded-full px-2 py-1 text-xs " + (save.done[puzzle.id] ? "bg-sage-soft text-sage" : "bg-deep text-ink/70")}>{save.done[puzzle.id] ? "✓" : "·"} {puzzle.title}</span>)}
+        </div>
+        {resumablePuzzle && activeAttempt ? <button type="button" onClick={() => onPlay(resumablePuzzle, activeAttempt.mode)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-ink px-3 text-sm font-medium text-paper"><SaveIcon className="size-4" /> Retomar atividade salva · {resumablePuzzle.title}</button> : null}
+        <button type="button" onClick={onReset} className="mt-4 min-h-11 rounded-xl border border-line px-3 text-sm">Reiniciar progresso</button>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <button type="button" onClick={() => downloadProgress(save)} className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-line px-3 text-sm"><Download className="size-4" /> Baixar relatório CSV</button>
+          <button type="button" onClick={() => void shareProgress(save)} className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-line px-3 text-sm"><Share2 className="size-4" /> Compartilhar progresso</button>
+        </div>
+        <p className="mt-2 text-xs leading-relaxed text-ink/65">O relatório exportado inclui nome e turma. O compartilhamento só os inclui quando você aciona o botão.</p>
+      </section>
+
+      <section className="rounded-2xl border border-line bg-card p-4">
+        <h2 className="font-display text-2xl font-semibold">Acessibilidade</h2>
+        <div className="mt-3 flex flex-col gap-2">
+          <label className="flex min-h-11 items-center justify-between gap-3 text-sm"><span>Texto ampliado</span><input className="size-5 accent-brass" type="checkbox" checked={save.largeText} onChange={(event) => onSettings("largeText", event.target.checked)} /></label>
+          <label className="flex min-h-11 items-center justify-between gap-3 text-sm"><span>Alto contraste</span><input className="size-5 accent-brass" type="checkbox" checked={save.highContrast} onChange={(event) => onSettings("highContrast", event.target.checked)} /></label>
+        </div>
+      </section>
+
+
       <section className="rounded-2xl border border-line bg-card p-4">
         <h2 className="font-display text-2xl font-semibold">Prática livre</h2>
         <p className="mt-1 text-sm leading-relaxed text-ink/70">
@@ -281,8 +470,7 @@ function Home({
       </section>
 
       <p className="text-sm leading-relaxed text-ink/70">
-        Tudo acontece neste navegador, sem login e sem guardar a conta de ninguém. Dá para publicar e abrir no
-        celular da sala, ou colocar o link numa página do site.
+        Nome, turma e progresso ficam neste navegador. Os convites não incluem esses dados. Ao compartilhar o relatório, você escolhe enviar o resumo com sua identificação.
       </p>
     </div>
   );
@@ -293,6 +481,8 @@ function Play({
   mode,
   save,
   onSave,
+  presentation,
+  onPresentation,
   onHome,
   onPlay,
 }: {
@@ -300,41 +490,52 @@ function Play({
   mode: "campaign" | "practice";
   save: Save;
   onSave: (fn: (current: Save) => Save) => void;
+  presentation: boolean;
+  onPresentation: () => void;
   onHome: () => void;
   onPlay: (puzzle: Puzzle, mode: "campaign" | "practice") => void;
 }) {
-  const [placed, setPlaced] = useState<Record<string, number>>({});
-  const [bank, setBank] = useState<number[]>(puzzle.bank);
+  const restored = save.activeAttempt?.puzzleId === puzzle.id && save.activeAttempt.mode === mode ? save.activeAttempt : undefined;
+  const [placed, setPlaced] = useState<Record<string, number>>(() => restored?.placed ?? {});
+  const [bank, setBank] = useState<number[]>(() => restored?.bank ?? puzzle.bank);
   const [selected, setSelected] = useState<number | null>(null);
   const [history, setHistory] = useState<{ placed: Record<string, number>; bank: number[] }[]>([]);
-  const [hints, setHints] = useState(0);
+  const [hints, setHints] = useState(() => restored?.hints ?? 0);
   const [note, setNote] = useState("");
   const [live, setLive] = useState(save.live);
   const [peek, setPeek] = useState(false);
   const [revealed, setRevealed] = useState(false);
+  const [teacherReveal, setTeacherReveal] = useState(false);
   const [confirmSolve, setConfirmSolve] = useState(false);
   const [won, setWon] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const [start] = useState(() => Date.now());
+  const [seconds, setSeconds] = useState(() => restored?.seconds ?? 0);
+  const [printDate, setPrintDate] = useState("");
+  const [start] = useState(() => Date.now() - (restored?.seconds ?? 0) * 1000);
   const [popId, setPopId] = useState<string | null>(null);
+  const [hinted, setHinted] = useState<string[]>([]);
 
   const numbers = useMemo(() => numsOf(puzzle), [puzzle]);
   const byId = useMemo(() => new Map(numbers.map((cell) => [cell.id, cell])), [numbers]);
   const report = equationStatus(puzzle, placed);
   const solved = report.every((item) => item.status === "ok");
   const closed = report.filter((item) => item.status === "ok").length;
-  const showTone = live || peek || revealed || won;
+  const allRevealed = numbers.every((cell) => cell.given || placed[cell.id] !== undefined);
+  const showTone = live || peek || revealed || won || teacherReveal;
 
   useEffect(() => {
-    if (won || revealed) return;
+    setPrintDate(new Date().toLocaleDateString("pt-BR"));
+  }, []);
+
+  useEffect(() => {
+    if (won || revealed || teacherReveal) return;
     const id = window.setInterval(() => {
       setSeconds(Math.round((Date.now() - start) / 1000));
     }, 1000);
     return () => window.clearInterval(id);
-  }, [won, revealed, start]);
+  }, [won, revealed, teacherReveal, start]);
 
   useEffect(() => {
-    if (!solved || won || revealed) return;
+    if (!solved || won || revealed || teacherReveal) return;
     const elapsed = Math.round((Date.now() - start) / 1000);
     setSeconds(elapsed);
     setWon(true);
@@ -343,9 +544,10 @@ function Play({
       onSave((current) => ({
         ...current,
         done: { ...current.done, [puzzle.id]: { seconds: elapsed, hints } },
+        activeAttempt: current.activeAttempt?.puzzleId === puzzle.id ? undefined : current.activeAttempt,
       }));
     }
-  }, [solved, won, revealed, start, save.sound, save.done, mode, puzzle.id, hints, onSave]);
+  }, [solved, won, revealed, teacherReveal, start, save.sound, save.done, mode, puzzle.id, hints, onSave]);
 
   const remember = () => {
     setHistory((stack) => [...stack.slice(-39), { placed, bank }]);
@@ -353,7 +555,7 @@ function Play({
 
   const onUndo = () => {
     const previous = history[history.length - 1];
-    if (!previous || won) return;
+    if (!previous || won || teacherReveal) return;
     setHistory((stack) => stack.slice(0, -1));
     setPlaced(previous.placed);
     setBank(previous.bank);
@@ -363,7 +565,7 @@ function Play({
   };
 
   const onClear = () => {
-    if (won || (Object.keys(placed).length === 0 && bank.length === puzzle.bank.length)) return;
+    if (won || teacherReveal || (Object.keys(placed).length === 0 && bank.length === puzzle.bank.length)) return;
     remember();
     setPlaced({});
     setBank(puzzle.bank);
@@ -373,35 +575,15 @@ function Play({
   };
 
   const onHint = () => {
-    if (won || revealed || hints >= 3) return;
-    const holes = numbers.filter((cell) => !cell.given && placed[cell.id] === undefined);
+    if (won || revealed || teacherReveal || hints >= 3) return;
+    const holes = numbers.filter((cell) => !cell.given && placed[cell.id] === undefined && !hinted.includes(cell.id));
     const target = holes.find((cell) => bank.includes(cell.solution)) ?? holes[0];
     if (!target) return;
-    remember();
-    const nextPlaced = { ...placed };
-    const nextBank = [...bank];
-    const fromBank = nextBank.indexOf(target.solution);
-    if (fromBank >= 0) {
-      nextBank.splice(fromBank, 1);
-    } else {
-      const donor = Object.keys(nextPlaced).find(
-        (id) => nextPlaced[id] === target.solution && nextPlaced[id] !== byId.get(id)?.solution,
-      );
-      if (!donor) {
-        setNote("Esse número já está numa casa. Devolva uma casa sua ou use desfazer.");
-        setHistory((stack) => stack.slice(0, -1));
-        return;
-      }
-      delete nextPlaced[donor];
-    }
-    nextPlaced[target.id] = target.solution;
-    setPlaced(nextPlaced);
-    setBank(nextBank);
+    const position = puzzle.rows.flatMap((row, r) => row.map((cell, c) => cell.k === "n" && cell.id === target.id ? { r: r + 1, c: c + 1 } : null)).flat().find(Boolean);
     setHints((count) => count + 1);
-    setSelected(null);
+    setHinted((current) => [...current, target.id]);
     setPopId(target.id);
-    setNote("Dica: uma casa possível.");
-    if (save.sound) playPlace();
+    setNote(`Dica ${hints + 1}: linha ${position?.r}, coluna ${position?.c} recebe ${target.solution}. A casa continua vazia para voce preencher.`);
   };
 
   const onReveal = () => {
@@ -418,8 +600,27 @@ function Play({
     setNote("Solução à mostra. Esta fase não entra como concluída.");
   };
 
+  const onRevealNext = () => {
+    if (!presentation || won || revealed) return;
+    const target = numbers.find((cell) => !cell.given && placed[cell.id] === undefined);
+    if (!target) {
+      setNote("Todas as casas escondidas ja foram reveladas.");
+      return;
+    }
+    const position = puzzle.rows.flatMap((row, r) => row.map((cell, c) => cell.k === "n" && cell.id === target.id ? { r: r + 1, c: c + 1 } : null)).flat().find(Boolean);
+    setPlaced((current) => ({ ...current, [target.id]: target.solution }));
+    setBank((current) => {
+      const index = current.indexOf(target.solution);
+      return index < 0 ? current : current.filter((_, item) => item !== index);
+    });
+    setSelected(null);
+    setTeacherReveal(true);
+    setPeek(true);
+    setNote(`Revelada linha ${position?.r}, coluna ${position?.c}: ${target.solution}. Esta demonstracao nao marca a fase como concluida.`);
+  };
+
   const onCell = (id: string) => {
-    if (won || revealed) return;
+    if (won || revealed || teacherReveal) return;
     const cell = byId.get(id);
     if (!cell || cell.given) return;
     const current = placed[id];
@@ -451,6 +652,16 @@ function Play({
     if (save.sound) playPlace();
   };
 
+  const saveAttempt = () => {
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    setSeconds(elapsed);
+    onSave((current) => ({
+      ...current,
+      activeAttempt: { puzzleId: puzzle.id, mode, placed, bank, hints, seconds: elapsed },
+    }));
+    setNote("Tentativa salva neste navegador. Você pode voltar a esta fase mais tarde.");
+  };
+
   const tier = TIERS.find((item) => item.id === puzzle.tier)!;
   const campaignIndex = CAMPAIGN.findIndex((item) => item.id === puzzle.id);
   const nextCampaign = campaignIndex >= 0 ? CAMPAIGN[campaignIndex + 1] : undefined;
@@ -461,7 +672,7 @@ function Play({
         <button
           type="button"
           onClick={onHome}
-          className="flex size-11 items-center justify-center rounded-full border border-line bg-card"
+          className="print-hide flex size-11 items-center justify-center rounded-full border border-line bg-card"
           aria-label="Voltar ao início"
         >
           <ArrowLeft className="size-5" />
@@ -477,11 +688,16 @@ function Play({
         </p>
       </header>
 
-      <p className="text-sm text-ink/80" aria-live="polite">
+      <p className="print-hide text-sm text-ink/80" aria-live="polite">
         {closed} de {report.length} contas fechadas
         {selected !== null ? ` · ${bank[selected]} selecionado` : ""}
         {note ? ` · ${note}` : ""}
       </p>
+
+      <section className="print-only mb-3 border-b border-black pb-3 text-sm">
+        <p><strong>Nome:</strong> {save.studentName || "________________________________"}</p>
+        <p><strong>Turma:</strong> {save.classroom || "________________"} <span className="ml-4"><strong>Data:</strong> {printDate}</span></p>
+      </section>
 
       <Board
         rows={puzzle.rows}
@@ -489,17 +705,21 @@ function Play({
         report={showTone ? report : report.map((item) => ({ ...item, status: "open" as EqStatus }))}
         selected={selected !== null}
         popId={popId}
+        hintId={hinted[hinted.length - 1] ?? null}
         onCell={onCell}
       />
 
-      <div className="grid grid-cols-4 gap-2">
-        <ToolButton label="Desfazer" disabled={history.length === 0 || won} onClick={onUndo}>
+      <div className="presentation-hide print-hide grid grid-cols-5 gap-2">
+        <ToolButton label="Salvar" disabled={won || revealed || teacherReveal} onClick={saveAttempt}>
+          <SaveIcon className="size-4" />
+        </ToolButton>
+        <ToolButton label="Desfazer" disabled={history.length === 0 || won || teacherReveal} onClick={onUndo}>
           <Undo2 className="size-4" />
         </ToolButton>
-        <ToolButton label="Limpar" disabled={won} onClick={onClear}>
+        <ToolButton label="Limpar" disabled={won || teacherReveal} onClick={onClear}>
           <RotateCcw className="size-4" />
         </ToolButton>
-        <ToolButton label={`Dica ${Math.max(0, 3 - hints)}`} disabled={won || revealed || hints >= 3} onClick={onHint}>
+        <ToolButton label={`Dica ${Math.max(0, 3 - hints)}`} disabled={won || revealed || teacherReveal || hints >= 3} onClick={onHint}>
           <Lightbulb className="size-4" />
         </ToolButton>
         <ToolButton
@@ -519,20 +739,45 @@ function Play({
         </ToolButton>
       </div>
 
+      {presentation ? <button type="button" onClick={onRevealNext} disabled={revealed || allRevealed} className="print-hide min-h-12 rounded-xl border border-brass bg-brass-soft px-4 text-sm font-medium disabled:opacity-50">{allRevealed ? "Todas as casas foram reveladas" : "Revelar proxima casa"}</button> : null}
+
+      <div className="print-hide grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <button type="button" onClick={async () => {
+          const url = new URL(window.location.href);
+          url.search = "";
+          if (mode === "campaign") url.searchParams.set("fase", puzzle.id);
+          else {
+            const match = puzzle.id.match(/^pratica-(facil|medio|desafio)-(\d+)$/);
+            if (match) url.searchParams.set("pratica", `${match[1]}-${match[2]}`);
+          }
+          const link = url.toString();
+          try {
+            if (navigator.share) await navigator.share({ title: `CrossMat - ${puzzle.title}`, url: link });
+            else if (await copyText(link)) setNote("Link copiado. Quem abrir recebera o mesmo desafio.");
+            else setNote("Este navegador nao permitiu copiar o link.");
+          } catch (error) {
+            if (!(error instanceof DOMException && error.name === "AbortError")) setNote("Nao foi possivel compartilhar o link.");
+          }
+        }} className="presentation-hide flex min-h-11 items-center justify-center gap-2 rounded-xl border border-line bg-card text-sm"><Share2 className="size-4" />Compartilhar fase</button>
+        <button type="button" onClick={onPresentation} aria-pressed={presentation} className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-line bg-card text-sm"><Maximize2 className="size-4" />{presentation ? "Sair da apresentacao" : "Apresentar"}</button>
+        <LiveKitShareRoom puzzleId={puzzle.id} />
+        <button type="button" onClick={() => { setNote("Na janela de impressão, escolha Salvar como PDF."); window.print(); }} className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-line bg-card text-sm"><Printer className="size-4" /> Baixar atividade PDF</button>
+      </div>
+
       {!live && !won ? (
         <button
           type="button"
+          className="print-hide text-left text-sm text-brass"
           onClick={() => {
             setLive(true);
             onSave((current) => ({ ...current, live: true }));
           }}
-          className="text-left text-sm text-brass"
         >
           Ligar correção ao vivo
         </button>
       ) : null}
 
-      <section>
+      <section className="print-hide">
         <h2 className="text-sm font-medium text-ink/70">Números</h2>
         <div className="mt-2 flex flex-wrap gap-2" role="listbox" aria-label="Números disponíveis">
           {bank.length === 0 ? (
@@ -549,7 +794,7 @@ function Play({
                   role="option"
                   aria-selected={on}
                   onClick={() => setSelected(on ? null : index)}
-                  disabled={won || revealed}
+                  disabled={won || revealed || teacherReveal}
                   className={
                     "flex h-12 min-w-12 items-center justify-center rounded-xl border px-3 font-display text-xl tabular-nums " +
                     (on
@@ -565,7 +810,7 @@ function Play({
         </div>
       </section>
 
-      {!won && !revealed ? (
+      {!won && !revealed && !teacherReveal && !presentation ? (
         confirmSolve ? (
           <div className="rounded-2xl border border-line bg-card p-4">
             <p className="text-sm leading-relaxed">
@@ -683,6 +928,7 @@ function Board({
   report,
   selected,
   popId,
+  hintId,
   onCell,
 }: {
   rows: Cell[][];
@@ -690,6 +936,7 @@ function Board({
   report: { eq: Equation; status: EqStatus }[];
   selected: boolean;
   popId: string | null;
+  hintId: string | null;
   onCell: (id: string) => void;
 }) {
   const cols = rows[0]?.length ?? 1;
@@ -727,7 +974,9 @@ function Board({
           const tone = cellTone(cell.id, report);
           const value = cell.given ? cell.solution : placed[cell.id];
           const filled = value !== undefined;
-          const toneClass =
+          const toneClass = cell.id === hintId
+            ? "border-brass bg-brass-soft text-ink ring-2 ring-brass"
+            :
             tone === "ok"
               ? "border-sage bg-sage-soft text-sage"
               : tone === "bad"
@@ -749,10 +998,10 @@ function Board({
               key={key}
               type="button"
               onClick={() => onCell(cell.id)}
-              disabled={cell.given}
+              aria-disabled={cell.given}
               aria-label={label}
               className={
-                "flex aspect-square items-center justify-center rounded-lg border font-display text-lg tabular-nums disabled:opacity-100 sm:text-xl " +
+                "board-cell flex aspect-square items-center justify-center rounded-lg border font-display text-lg tabular-nums sm:text-xl " +
                 toneClass +
                 (popId === cell.id && filled ? " tile-in" : "")
               }
